@@ -1,15 +1,26 @@
 package org.mason.b3;
 
+import java.io.File;
+
 /**
  * Created by bmason42 on 10/4/15.
  */
 public class FileMetaData {
+    private File fullLocalPath;
     private String name;
     private String relativePath;
     private long size;
     private long timestamp;
 
     public FileMetaData() {
+    }
+
+    public File getFullLocalPath() {
+        return fullLocalPath;
+    }
+
+    public void setFullLocalPath(File fullLocalPath) {
+        this.fullLocalPath = fullLocalPath;
     }
 
     public String getName() {
@@ -44,5 +55,9 @@ public class FileMetaData {
 
     public void setTimestamp(long timestamp) {
         this.timestamp = timestamp;
+    }
+
+    public String getS3Key(){
+        return relativePath + name;
     }
 }

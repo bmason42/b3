@@ -51,7 +51,7 @@ public class FileLister {
                     data.setRelativePath(relativePath);
                     data.setSize(f.length());
                     data.setTimestamp(f.lastModified());
-
+                    data.setFullLocalPath(f);
                     ret.add(data);
                 } catch (Exception e) {
                     skippedFiles.add(f);
