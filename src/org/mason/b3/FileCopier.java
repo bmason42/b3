@@ -1,5 +1,7 @@
 package org.mason.b3;
 
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.profile.ProfileCredentialsProvider;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3Client;
@@ -26,12 +28,15 @@ public class FileCopier {
     List<FileMetaData> files=new ArrayList<>();
     AtomicInteger nextFile=new AtomicInteger(0);
     int numberOfThreads=1;
+    int maxRetries=5;
 
-    private String credtialProfile="default";
-    private String bucket="b3-backup-bmason42";
+    private String bucket;
     public static final String FILE_TIME_STAMP_KEY = "filetimestamp";
     public static final String HASH_KEY= "filehash";
+    private String accessId;
+    private String accessSecret;
     private AtomicBoolean done=new AtomicBoolean(false);
+    private String region;
 
     public FileCopier(List<FileMetaData> files) {
         this.files = files;
@@ -48,16 +53,29 @@ public class FileCopier {
     public int getCurrentCount(){
         return nextFile.get();
     }
-    public String getCredtialProfile() {
-        return credtialProfile;
-    }
 
-    public void setCredtialProfile(String credtialProfile) {
-        this.credtialProfile = credtialProfile;
+    public void setRegion(String region) {
+        this.region = region;
     }
 
     public String getBucket() {
         return bucket;
+    }
+
+    public int getNumberOfThreads() {
+        return numberOfThreads;
+    }
+
+    public void setNumberOfThreads(int numberOfThreads) {
+        this.numberOfThreads = numberOfThreads;
+    }
+
+    public int getMaxRetries() {
+        return maxRetries;
+    }
+
+    public void setMaxRetries(int maxRetries) {
+        this.maxRetries = maxRetries;
     }
 
     public void setBucket(String bucket) {
@@ -65,7 +83,6 @@ public class FileCopier {
     }
 
     public void start(){
-        checkBucketAndMakeIfNeeded();
         final CountDownLatch latch=new CountDownLatch(numberOfThreads);
         for (int i=0;i<numberOfThreads;i++){
             Runnable run=new Runnable() {
@@ -94,12 +111,17 @@ public class FileCopier {
         }
 
     }
-    private void checkBucketAndMakeIfNeeded(){
-        ProfileCredentialsProvider provider=new ProfileCredentialsProvider(credtialProfile);
-        AmazonS3Client s3=new AmazonS3Client(provider);
-        Regions usWest21 = Regions.US_WEST_2;
-        com.amazonaws.regions.Region usWest2 = com.amazonaws.regions.Region.getRegion(usWest21);
-        s3.setRegion(usWest2);
+
+    public void setAccessId(String accessId) {
+        this.accessId = accessId;
+    }
+
+    public void setAccessSecret(String accessSecret) {
+        this.accessSecret = accessSecret;
+    }
+
+    public void checkBucketAndMakeIfNeeded(){
+        AmazonS3Client s3 = mkS3Client();
         List<Bucket> buckets = s3.listBuckets();
         Bucket bucketToUse=null;
         for (Bucket b:buckets){
@@ -112,17 +134,58 @@ public class FileCopier {
             s3.createBucket(bucket);
         }
     }
-    private void startCopyThread() {
-        ProfileCredentialsProvider provider=new ProfileCredentialsProvider(credtialProfile);
+
+    public AmazonS3Client mkS3Client() {
+        AWSCredentialsProvider provider=new AWSCredentialsProvider() {
+            @Override
+            public AWSCredentials getCredentials() {
+                AWSCredentials ret=new AWSCredentials() {
+                    @Override
+                    public String getAWSAccessKeyId() {
+                        return accessId;
+                    }
+
+                    @Override
+                    public String getAWSSecretKey() {
+                        return accessSecret;
+                    }
+                };
+                return ret;
+            }
+
+            @Override
+            public void refresh() {
+
+            }
+        };
         AmazonS3Client s3=new AmazonS3Client(provider);
-        Regions usWest21 = Regions.US_WEST_2;
+        Regions usWest21 = Regions.fromName(region);
         com.amazonaws.regions.Region usWest2 = com.amazonaws.regions.Region.getRegion(usWest21);
         s3.setRegion(usWest2);
+        return s3;
+    }
+
+    private void startCopyThread() {
+        AmazonS3Client s3=mkS3Client();
         int n=nextFile.getAndIncrement();
         try {
             while (n < files.size()) {
                 FileMetaData data=files.get(n);
-                backupFileIfNeeded(s3,data);
+                int retryCount=0;
+                Exception lastError=null;
+                while (retryCount<maxRetries){
+                    try{
+                        backupFileIfNeeded(s3,data);
+                        break;
+                    }catch (Exception e){
+                        lastError=e;
+                        retryCount++;
+                    }
+                }
+                if (retryCount >=maxRetries){
+                    String error=lastError == null ? "No Error Info" : lastError.getLocalizedMessage() ;
+                    System.err.println("Unable to backup file: " + data.getRelativePath() + " Error: " + lastError);
+                }
                 n = nextFile.getAndIncrement();
             }
         }catch (Throwable t){
@@ -151,8 +214,6 @@ public class FileCopier {
         if (metadata != null){
 
             Map<String, String> userMetadata = metadata.getUserMetadata();
-            String tsString = userMetadata.get(FILE_TIME_STAMP_KEY);
-            long ts=tsString == null ? 0 :Long.parseLong(tsString);
             String s3Hash=metadata.getContentMD5();
             String userHash=userMetadata.get(HASH_KEY);
             s3Hash=s3Hash==null ? userHash :  s3Hash;
@@ -171,7 +232,6 @@ public class FileCopier {
             metadata.getUserMetadata().put(HASH_KEY,localHash);
             try (FileInputStream in = new FileInputStream(data.getFullLocalPath())) {
                 PutObjectResult result = s3.putObject(bucket,key,in,metadata);
-                System.out.println(result);
             }
         }
 
